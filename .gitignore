@@ -1,0 +1,11 @@
+dependency-reduced-pom.xml
+.idea/aws-exploration.iml
+.idea/compiler.xml
+.idea/encodings.xml
+.idea/.gitignore
+.idea/jarRepositories.xml
+.idea/misc.xml
+.idea/vcs.xml
+.vscode/settings.json
+target/
+.env
