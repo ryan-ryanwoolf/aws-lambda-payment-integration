@@ -11,8 +11,8 @@ import java.io.IOException;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Loads RSA PEM material from AWS Secrets Manager (JSON key/value or raw PEM) with in-memory caching.
- * Falls back to environment variables for local development.
+ * Loads RSA PEM material from AWS Secrets Manager (JSON key/value or raw PEM)
+ * with in-memory caching.
  */
 public final class JwtSecretPemLoader {
 
@@ -21,40 +21,40 @@ public final class JwtSecretPemLoader {
     private static final ConcurrentHashMap<String, String> CACHE = new ConcurrentHashMap<>();
     private static volatile SecretsManagerClient secretsClient;
 
-    private JwtSecretPemLoader() {}
-
-    /**
-     * If {@code JWT_RSA_PRIVATE_KEY_SECRET_ID} is set, loads that secret (JSON field
-     * {@code JWT_RSA_PRIVATE_KEY_SECRET_JSON_KEY}, default {@code JWT_RSA_PRIVATE_KEY_PEM});
-     * otherwise requires {@code JWT_RSA_PRIVATE_KEY_PEM}.
-     */
-    public static String loadPrivateKeyPem() {
-        String secretId = Env.optional("JWT_RSA_PRIVATE_KEY_SECRET_ID", "").trim();
-        if (!secretId.isEmpty()) {
-            String jsonKey = Env.optional("JWT_RSA_PRIVATE_KEY_SECRET_JSON_KEY", "JWT_RSA_PRIVATE_KEY_PEM");
-            return cached(secretId, jsonKey, () -> fetchAndExtract(secretId, jsonKey));
-        }
-        return Env.required("JWT_RSA_PRIVATE_KEY_PEM");
+    private JwtSecretPemLoader() {
     }
 
     /**
-     * If {@code JWT_RSA_PUBLIC_KEY_SECRET_ID} is set, loads that secret (JSON field
-     * {@code JWT_RSA_PUBLIC_KEY_SECRET_JSON_KEY}, default {@code JWT_RSA_PUBLIC_KEY_PEM});
-     * otherwise requires {@code JWT_RSA_PUBLIC_KEY_PEM}.
+     * Loads the private key from Secrets Manager using
+     * {@code JWT_RSA_PRIVATE_KEY_SECRET_ID}
+     * and optional JSON field {@code JWT_RSA_PRIVATE_KEY_SECRET_JSON_KEY}
+     * (default {@code JWT_RSA_PRIVATE_KEY_PEM}).
      */
+    // Used to load the private key from Secrets Manager
+    public static String loadPrivateKeyPem() {
+        String secretId = Env.required("JWT_RSA_PRIVATE_KEY_SECRET_ID").trim();
+        String jsonKey = Env.optional("JWT_RSA_PRIVATE_KEY_SECRET_JSON_KEY", "JWT_RSA_PRIVATE_KEY_PEM");
+        return cached(secretId, jsonKey, () -> fetchAndExtract(secretId, jsonKey));
+    }
+
+    /**
+     * Loads the public key from Secrets Manager using
+     * {@code JWT_RSA_PUBLIC_KEY_SECRET_ID}
+     * and optional JSON field {@code JWT_RSA_PUBLIC_KEY_SECRET_JSON_KEY}
+     * (default {@code JWT_RSA_PUBLIC_KEY_PEM}).
+     */
+    // Used to load the public key from Secrets Manager
     public static String loadPublicKeyPem() {
-        String secretId = Env.optional("JWT_RSA_PUBLIC_KEY_SECRET_ID", "").trim();
-        if (!secretId.isEmpty()) {
-            String jsonKey = Env.optional("JWT_RSA_PUBLIC_KEY_SECRET_JSON_KEY", "JWT_RSA_PUBLIC_KEY_PEM");
-            return cached(secretId, jsonKey, () -> fetchAndExtract(secretId, jsonKey));
-        }
-        return Env.required("JWT_RSA_PUBLIC_KEY_PEM");
+        String secretId = Env.required("JWT_RSA_PUBLIC_KEY_SECRET_ID").trim();
+        String jsonKey = Env.optional("JWT_RSA_PUBLIC_KEY_SECRET_JSON_KEY", "JWT_RSA_PUBLIC_KEY_PEM");
+        return cached(secretId, jsonKey, () -> fetchAndExtract(secretId, jsonKey));
     }
 
     private static String cached(String secretId, String jsonKey, java.util.function.Supplier<String> loader) {
         return CACHE.computeIfAbsent(secretId + "\0" + jsonKey, k -> loader.get());
     }
 
+    // Used to fetch the secret from Secrets Manager and extract the PEM
     private static String fetchAndExtract(String secretId, String jsonKey) {
         String secretString = client()
                 .getSecretValue(GetSecretValueRequest.builder().secretId(secretId).build())
@@ -66,8 +66,10 @@ public final class JwtSecretPemLoader {
     }
 
     /**
-     * If the payload looks like JSON, reads {@code jsonKey}. Otherwise returns the full string (raw PEM).
+     * If the payload looks like JSON, reads {@code jsonKey}. Otherwise returns the
+     * full string (raw PEM).
      */
+    // Used to extract the PEM from the secret string
     static String extractPem(String secretString, String jsonKey) {
         String trimmed = secretString.trim();
         if (!trimmed.startsWith("{")) {
@@ -88,7 +90,8 @@ public final class JwtSecretPemLoader {
         if (secretsClient == null) {
             synchronized (JwtSecretPemLoader.class) {
                 if (secretsClient == null) {
-                    String region = firstNonBlank(System.getenv("AWS_REGION"), System.getenv("AWS_DEFAULT_REGION"), "eu-west-1");
+                    String region = firstNonBlank(System.getenv("AWS_REGION"), System.getenv("AWS_DEFAULT_REGION"),
+                            "eu-west-1");
                     secretsClient = SecretsManagerClient.builder().region(Region.of(region)).build();
                 }
             }

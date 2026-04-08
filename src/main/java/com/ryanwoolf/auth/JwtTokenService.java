@@ -26,9 +26,10 @@ public final class JwtTokenService {
     private final int ttlSeconds;
 
     /**
-     * Token issuer Lambda: PEM from {@code JWT_RSA_PRIVATE_KEY_SECRET_ID} (Secrets Manager) or
-     * {@code JWT_RSA_PRIVATE_KEY_PEM} (env). See {@link JwtSecretPemLoader}.
+     * Token issuer Lambda: PEM from {@code JWT_RSA_PRIVATE_KEY_SECRET_ID} (Secrets Manager).
+     * See {@link JwtSecretPemLoader}.
      */
+    // Used to create a JwtTokenService instance for the token issuer
     public static JwtTokenService forTokenIssuer() {
         RSAPrivateKey privateKey = RsaPemKeys.parsePkcs8PrivateKey(JwtSecretPemLoader.loadPrivateKeyPem());
         Algorithm sign = Algorithm.RSA256(null, privateKey);
@@ -41,9 +42,9 @@ public final class JwtTokenService {
     }
 
     /**
-     * JWT authorizer Lambda: PEM from {@code JWT_RSA_PUBLIC_KEY_SECRET_ID} (Secrets Manager) or
-     * {@code JWT_RSA_PUBLIC_KEY_PEM} (env).
+     * JWT authorizer Lambda: PEM from {@code JWT_RSA_PUBLIC_KEY_SECRET_ID} (Secrets Manager).
      */
+    // Used to create a JwtTokenService instance for the JWT authorizer
     public static JwtTokenService forAuthorizer() {
         RSAPublicKey publicKey = RsaPemKeys.parsePublicKey(JwtSecretPemLoader.loadPublicKeyPem());
         Algorithm algorithm = Algorithm.RSA256(publicKey, null);
@@ -85,6 +86,7 @@ public final class JwtTokenService {
         }
     }
 
+    //This is used by the token issuer to create JWTs for the authorizer to verify.
     public String createAccessToken(String partnerId, String partnerDisplayName) {
         if (signingAlgorithm == null) {
             throw new IllegalStateException("Signing is not configured (use forTokenIssuer or forTests with a private key)");
@@ -102,6 +104,7 @@ public final class JwtTokenService {
                 .sign(signingAlgorithm);
     }
 
+    // This is used by the authorizer to verify incoming JWTs on API requests.
     public DecodedJWT verify(String token) {
         if (verificationAlgorithm == null) {
             throw new IllegalStateException("Verification is not configured (use forAuthorizer or forTests with a public key)");

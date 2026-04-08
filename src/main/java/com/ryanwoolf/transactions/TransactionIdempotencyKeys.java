@@ -1,13 +1,18 @@
 package com.ryanwoolf.transactions;
 
 /**
- * Builds the composite idempotency key used as DynamoDB partition key and API {@code transactionId}.
- * Format: {@code partnerId + '#' + clientSuppliedKey}. Client keys must not contain {@code '#'}.
+ * Builds the composite idempotency key used as DynamoDB partition key and API
+ * {@code transactionId}.
+ * Format: {@code partnerId + '#' + clientSuppliedKey}. Client keys must not
+ * contain {@code '#'}.
  */
 public final class TransactionIdempotencyKeys {
 
-    private TransactionIdempotencyKeys() {}
+    private TransactionIdempotencyKeys() {
+    }
 
+    // Used to build the composite idempotency key used as DynamoDB partition key
+    // and API {@code transactionId}.
     public static String composite(String partnerId, String clientIdempotencyKey) {
         if (partnerId == null || partnerId.isBlank()) {
             throw new IllegalArgumentException("partnerId required");

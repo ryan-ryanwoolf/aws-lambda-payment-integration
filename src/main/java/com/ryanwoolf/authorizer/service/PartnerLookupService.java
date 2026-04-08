@@ -41,6 +41,8 @@ public class PartnerLookupService implements PartnerLookup {
         this.partitionKeyAttributeName = partitionKeyAttributeName;
     }
 
+    // Used by the partner token issuer to validate the x-api-key for a given
+    // x-partner-id and check enabled status
     @Override
     public PartnerRecord findByPartnerIdAndApiKey(String partnerId, String apiKey) {
         LOGGER.info(() -> "Partner lookup started: partnerId=" + partnerId + ", tableName=" + tableName);
@@ -51,31 +53,45 @@ public class PartnerLookupService implements PartnerLookup {
                 .build();
 
         GetItemResponse response = dynamoDbClient.getItem(request);
-
-        if (response.item() == null || response.item().isEmpty()) {
-            LOGGER.info(() -> "Partner lookup result: no row found for partnerId=" + partnerId);
-            return null;
-        }
-
         Map<String, AttributeValue> item = response.item();
         LOGGER.info(() -> "Partner lookup result: row found for partnerId=" + partnerId);
 
-        if (!item.containsKey(ATTR_API_KEY_HASH) || item.get(ATTR_API_KEY_HASH).s() == null) {
-            LOGGER.warning(() -> "Partner row missing apiKeyHash for partnerId=" + partnerId);
+        if (validateResponseAndAPIKeyPresent(partnerId, response, item))
             return null;
-        }
 
-        String storedHash = item.get(ATTR_API_KEY_HASH).s();
-        boolean hashMatches = argon2ApiKeyHashService.matches(apiKey, storedHash);
-        LOGGER.info(() -> "API key hash verification result for partnerId=" + partnerId + ": " + hashMatches);
-        if (!hashMatches) {
+        if (validateAPIKeyMatches(partnerId, apiKey, item))
             return null;
-        }
 
         String partner = item.containsKey(ATTR_PARTNER) ? item.get(ATTR_PARTNER).s() : null;
         boolean enabled = item.containsKey(ATTR_ENABLED) && Boolean.TRUE.equals(item.get(ATTR_ENABLED).bool());
         LOGGER.info(() -> "Partner enabled flag for partnerId=" + partnerId + ": " + enabled);
 
         return new PartnerRecord(partner, enabled);
+    }
+
+    // Used to validate that the API key matches the encoded hash
+    private boolean validateAPIKeyMatches(String partnerId, String apiKey, Map<String, AttributeValue> item) {
+        String storedHash = item.get(ATTR_API_KEY_HASH).s();
+        boolean hashMatches = argon2ApiKeyHashService.matches(apiKey, storedHash);
+        LOGGER.info(() -> "API key hash verification result for partnerId=" + partnerId + ": " + hashMatches);
+        if (!hashMatches) {
+            return true;
+        }
+        return false;
+    }
+
+    // Used to validate that the response and API key are present
+    private static boolean validateResponseAndAPIKeyPresent(String partnerId, GetItemResponse response,
+            Map<String, AttributeValue> item) {
+        if (response.item() == null || response.item().isEmpty()) {
+            LOGGER.info(() -> "Partner lookup result: no row found for partnerId=" + partnerId);
+            return true;
+        }
+
+        if (!item.containsKey(ATTR_API_KEY_HASH) || item.get(ATTR_API_KEY_HASH).s() == null) {
+            LOGGER.warning(() -> "Partner row missing apiKeyHash for partnerId=" + partnerId);
+            return true;
+        }
+        return false;
     }
 }

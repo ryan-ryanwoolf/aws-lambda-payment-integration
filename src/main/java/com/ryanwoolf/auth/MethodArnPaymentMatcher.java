@@ -3,9 +3,11 @@ package com.ryanwoolf.auth;
 import com.ryanwoolf.authorizer.util.Env;
 
 /**
- * Ensures API Gateway {@code methodArn} is the payment initiation route only (fail closed).
+ * Ensures API Gateway {@code methodArn} is the payment initiation route only
+ * (fail closed).
  * <p>
- * ARN form: {@code arn:aws:execute-api:region:account:apiId/stage/HTTP-VERB/resource-path}
+ * ARN form:
+ * {@code arn:aws:execute-api:region:account:apiId/stage/HTTP-VERB/resource-path}
  */
 public final class MethodArnPaymentMatcher {
 
@@ -23,6 +25,8 @@ public final class MethodArnPaymentMatcher {
         this.expectedResourcePath = normalizeResourcePath(expectedResourcePath);
     }
 
+    // Used to normalize the resource path so that we can compare the expected
+    // resource path to the actual resource path
     private static String normalizeResourcePath(String path) {
         String p = path.trim();
         while (p.startsWith("/")) {
@@ -32,8 +36,10 @@ public final class MethodArnPaymentMatcher {
     }
 
     /**
-     * @return true if this request targets the configured payment initiation method + resource.
+     * @return true if this request targets the configured payment initiation method
+     *         + resource.
      */
+    // Used to check if the methodArn matches the configured payment initiation method + resource
     public boolean matchesPaymentInitiation(String methodArn) {
         if (methodArn == null || methodArn.isBlank()) {
             return false;
