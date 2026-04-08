@@ -41,6 +41,7 @@ public final class DynamoDbPendingTransactionRepository implements PendingTransa
         this.partitionKeyAttribute = partitionKeyAttribute;
     }
 
+    // Used to create a new pending transaction if it does not already exist
     @Override
     public void createIfAbsent(String compositeIdempotencyKey, String partnerId) throws DuplicateTransactionException {
         String createdAt = Instant.now().toString();

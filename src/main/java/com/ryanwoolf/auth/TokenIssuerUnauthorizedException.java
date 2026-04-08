@@ -6,6 +6,7 @@ package com.ryanwoolf.auth;
  */
 public final class TokenIssuerUnauthorizedException extends RuntimeException {
 
+    // Used to create a new TokenIssuerUnauthorizedException with a message
     public TokenIssuerUnauthorizedException(String message) {
         super(message);
     }

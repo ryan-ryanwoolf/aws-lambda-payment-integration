@@ -14,6 +14,7 @@ public final class Argon2ApiKeyHashService {
     private static final int MEMORY_KIB = 65_536;
     private static final int PARALLELISM = 1;
 
+    // Used to hash the API key for storage in the database
     public String hashForStorage(String apiKey) {
         Argon2 argon2 = Argon2Factory.create(Argon2Factory.Argon2Types.ARGON2id);
         char[] chars = apiKey.toCharArray();
@@ -24,6 +25,7 @@ public final class Argon2ApiKeyHashService {
         }
     }
 
+    // Used to verify that the API key matches the encoded hash
     public boolean matches(String apiKey, String encodedHash) {
         Argon2 argon2 = Argon2Factory.create(Argon2Factory.Argon2Types.ARGON2id);
         char[] chars = apiKey.toCharArray();

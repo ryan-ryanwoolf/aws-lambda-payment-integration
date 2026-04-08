@@ -9,6 +9,7 @@ public final class ApiGatewayHeaderExtractor {
 
     private ApiGatewayHeaderExtractor() {}
 
+    //Used by the partner token issuer to get fields like x-api-key and x-partner-id
     public static String getHeader(Map<String, Object> event, String name) {
         Object headersObj = event.get("headers");
         if (!(headersObj instanceof Map<?, ?> headers)) {

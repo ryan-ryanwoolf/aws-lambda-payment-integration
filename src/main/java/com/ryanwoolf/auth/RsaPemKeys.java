@@ -13,11 +13,14 @@ import java.util.Base64;
  */
 public final class RsaPemKeys {
 
-    private RsaPemKeys() {}
+    private RsaPemKeys() {
+    }
 
     /**
-     * PKCS#8 private key: lines between {@code -----BEGIN PRIVATE KEY-----} and {@code -----END PRIVATE KEY-----}.
+     * PKCS#8 private key: lines between {@code -----BEGIN PRIVATE KEY-----} and
+     * {@code -----END PRIVATE KEY-----}.
      */
+    // Used to parse the private key from the PEM string
     public static RSAPrivateKey parsePkcs8PrivateKey(String pemFromEnv) {
         String pem = normalizePem(pemFromEnv);
         byte[] der = extractBase64Der(pem, "PRIVATE KEY");
@@ -30,8 +33,10 @@ public final class RsaPemKeys {
     }
 
     /**
-     * SubjectPublicKeyInfo public key: lines between {@code -----BEGIN PUBLIC KEY-----} and {@code -----END PUBLIC KEY-----}.
+     * SubjectPublicKeyInfo public key: lines between
+     * {@code -----BEGIN PUBLIC KEY-----} and {@code -----END PUBLIC KEY-----}.
      */
+    // Used to parse the public key from the PEM string
     public static RSAPublicKey parsePublicKey(String pemFromEnv) {
         String pem = normalizePem(pemFromEnv);
         byte[] der = extractBase64Der(pem, "PUBLIC KEY");
@@ -43,6 +48,9 @@ public final class RsaPemKeys {
         }
     }
 
+    // Used to normalize the PEM string so that we can compare the expected PEM to
+    // the actual PEM
+    // Newlines are normalized to \n
     static String normalizePem(String raw) {
         if (raw == null || raw.isBlank()) {
             throw new IllegalStateException("PEM string is blank");

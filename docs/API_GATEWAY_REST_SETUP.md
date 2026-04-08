@@ -274,6 +274,12 @@ For env-only PEM, newlines can be real or `\n` escapes; `RsaPemKeys` normalizes 
 ## 5. Rate limiting the public token endpoint (`POST /auth/token`)
 
 API Gateway **usage plans** throttle per **API key**; your token endpoint is “public” in the sense of **no JWT**, but you should still **throttle and abuse‑protect**:
+Set to 
+Rate: 100
+Burst: 50 (adjust for your expected legitimate traffic volume and partner count).
+
+It should never get anywhere near these limits under normal use, but they provide a safety net against credential leaks or abuse.
+
 
 ### Option A — Stage / method throttling (simple)
 

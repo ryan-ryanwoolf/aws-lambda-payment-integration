@@ -4,15 +4,19 @@ import com.amazonaws.services.lambda.runtime.Context;
 import com.amazonaws.services.lambda.runtime.RequestHandler;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.ryanwoolf.api.ApiGatewayResponses;
 import com.ryanwoolf.api.ApiGatewayHeaderExtractor;
+import com.ryanwoolf.api.LambdaExceptionMapper;
 
-import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
  * Payment initiation Lambda (REST API proxy or HTTP API v2 proxy).
- * Partner identity comes only from the API Gateway authorizer context (never from the body).
- * Requires header {@code Idempotency-Key}; the composite {@code partnerId#key} is stored in DynamoDB
+ * Partner identity comes only from the API Gateway authorizer context (never
+ * from the body).
+ * Requires header {@code Idempotency-Key}; the composite {@code partnerId#key}
+ * is stored in DynamoDB
  * and returned as {@code transactionId}.
  * <p>
  * Handler: {@code com.ryanwoolf.transactions.PaymentInitiationHandler}
@@ -20,6 +24,20 @@ import java.util.Map;
 public class PaymentInitiationHandler implements RequestHandler<Map<String, Object>, Map<String, Object>> {
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final List<LambdaExceptionMapper.ExceptionRule> ERROR_RULES = List.of(
+            LambdaExceptionMapper.ExceptionRule.withExceptionMessage(
+                    MethodNotAllowedException.class, 405, "METHOD_NOT_ALLOWED"),
+            LambdaExceptionMapper.ExceptionRule.withExceptionMessage(
+                    IllegalArgumentException.class, 400, "BAD_REQUEST"),
+            LambdaExceptionMapper.ExceptionRule.withFixedMessage(
+                    DuplicateTransactionException.class,
+                    409,
+                    "IDEMPOTENCY_CONFLICT",
+                    "A transaction already exists for this partner and Idempotency-Key"),
+            LambdaExceptionMapper.ExceptionRule.withExceptionMessage(
+                    AuthorizerDeniedException.class, 403, "FORBIDDEN"));
+    private static final LambdaExceptionMapper.ExceptionRule DEFAULT_ERROR_RULE = LambdaExceptionMapper.ExceptionRule
+            .withoutMessage(Exception.class, 500, "INTERNAL_ERROR");
 
     private final PendingTransactionRepository pendingTransactions;
 
@@ -31,53 +49,26 @@ public class PaymentInitiationHandler implements RequestHandler<Map<String, Obje
         this.pendingTransactions = pendingTransactions;
     }
 
+    // Used to handle the payment initiation request
     @Override
     public Map<String, Object> handleRequest(Map<String, Object> event, Context context) {
         try {
             String method = extractHttpMethod(event);
-            if (method != null && !"POST".equalsIgnoreCase(method)) {
-                return jsonResponse(405, Map.of(
-                        "error", "METHOD_NOT_ALLOWED",
-                        "message", "Only POST is supported"));
-            }
+            validateRequestMethod(method);
 
             AuthorizerLambdaContext auth = AuthorizerLambdaContext.fromEvent(event);
-            if (auth == null || !auth.isEffectivelyAuthorized()) {
-                return jsonResponse(403, Map.of(
-                        "error", "FORBIDDEN",
-                        "message", "Missing or invalid authorizer context"));
-            }
+            validateRequestEffectivelyDenied(auth);
 
             String partnerId = auth.partnerId();
-            if (partnerId == null || partnerId.isBlank()) {
-                return jsonResponse(403, Map.of(
-                        "error", "FORBIDDEN",
-                        "message", "partnerId missing from authorizer context"));
-            }
-
+            validatePartnerIdInSecurityContext(partnerId);
             String clientIdempotencyKey = ApiGatewayHeaderExtractor.getHeader(event, "Idempotency-Key");
-            if (clientIdempotencyKey == null || clientIdempotencyKey.isBlank()) {
-                return jsonResponse(400, Map.of(
-                        "error", "BAD_REQUEST",
-                        "message", "Missing Idempotency-Key header"));
-            }
+            validateIdempotencyKeyPresent(clientIdempotencyKey);
 
             final String compositeKey;
-            try {
-                compositeKey = TransactionIdempotencyKeys.composite(partnerId, clientIdempotencyKey);
-            } catch (IllegalArgumentException e) {
-                return jsonResponse(400, Map.of(
-                        "error", "BAD_REQUEST",
-                        "message", e.getMessage()));
-            }
 
-            try {
-                pendingTransactions.createIfAbsent(compositeKey, partnerId);
-            } catch (DuplicateTransactionException e) {
-                return jsonResponse(409, Map.of(
-                        "error", "IDEMPOTENCY_CONFLICT",
-                        "message", "A transaction already exists for this partner and Idempotency-Key"));
-            }
+            // Used to create the composite key for the idempotency key
+            compositeKey = TransactionIdempotencyKeys.composite(partnerId, clientIdempotencyKey);
+            pendingTransactions.createIfAbsent(compositeKey, partnerId);
 
             ObjectNode body = MAPPER.createObjectNode();
             body.put("transactionId", compositeKey);
@@ -91,20 +82,50 @@ public class PaymentInitiationHandler implements RequestHandler<Map<String, Obje
             context.getLogger().log(
                     "Payment initiation accepted for partnerId=" + partnerId + ", transactionId=" + compositeKey);
 
-            return jsonResponse(202, body);
+            return ApiGatewayResponses.jsonResponse(202, body);
         } catch (Exception e) {
-            context.getLogger().log("Payment initiation error: " + e.getMessage());
-            try {
-                return jsonResponse(500, Map.of("error", "INTERNAL_ERROR"));
-            } catch (Exception ex) {
-                throw new IllegalStateException(ex);
-            }
+            return LambdaExceptionMapper.map(
+                    e,
+                    context,
+                    "Payment initiation error: ",
+                    ERROR_RULES,
+                    DEFAULT_ERROR_RULE);
+        }
+    }
+
+    // Used to validate that the idempotency key is present and not blank
+    private static void validateIdempotencyKeyPresent(String clientIdempotencyKey) {
+        if (clientIdempotencyKey == null || clientIdempotencyKey.isBlank()) {
+            throw new IllegalArgumentException("Idempotency Key header is required and cannot be blank");
+        }
+    }
+
+    // Used to validate that the partner id is present and not blank
+    private static void validatePartnerIdInSecurityContext(String partnerId) {
+        if (partnerId == null || partnerId.isBlank()) {
+            throw new AuthorizerDeniedException("Unauthorized: missing partnerId in authorizer context");
+        }
+    }
+
+    // Used to validate that the request is not effectively denied
+    private static void validateRequestEffectivelyDenied(AuthorizerLambdaContext auth) {
+        if (auth == null || !auth.isEffectivelyAuthorized()) {
+            throw new AuthorizerDeniedException("Unauthorized: missing or invalid authorizer context");
+        }
+    }
+
+    // Used to validate that the request method is POST
+    private static void validateRequestMethod(String method) {
+        if (method != null && !"POST".equalsIgnoreCase(method)) {
+            throw new MethodNotAllowedException("Only POST is supported");
         }
     }
 
     /**
-     * REST API proxy uses top-level {@code httpMethod}. HTTP API v2 uses {@code requestContext.http.method}.
+     * REST API proxy uses top-level {@code httpMethod}. HTTP API v2 uses
+     * {@code requestContext.http.method}.
      */
+    // Used to extract the HTTP method from the event
     private static String extractHttpMethod(Map<String, Object> event) {
         Object top = event.get("httpMethod");
         if (top != null) {
@@ -122,19 +143,11 @@ public class PaymentInitiationHandler implements RequestHandler<Map<String, Obje
         return m != null ? String.valueOf(m) : null;
     }
 
-    private static Map<String, Object> jsonResponse(int statusCode, Object body) throws Exception {
-        Map<String, String> headers = Map.of("content-type", "application/json");
-        Map<String, Object> response = new HashMap<>();
-        response.put("statusCode", statusCode);
-        response.put("headers", headers);
-        response.put("body", MAPPER.writeValueAsString(body));
-        return response;
-    }
-
     /**
      * REST API: flat string map under {@code requestContext.authorizer}.
      * HTTP API v2: nested under {@code requestContext.authorizer.lambda}.
      */
+    // Used to extract the authorizer lambda context from the event
     private static final class AuthorizerLambdaContext {
         private final String partnerId;
         private final String partnerDisplayName;
@@ -146,6 +159,7 @@ public class PaymentInitiationHandler implements RequestHandler<Map<String, Obje
             this.authorizedRaw = authorizedRaw;
         }
 
+        // Used to extract the authorizer lambda context from the event
         static AuthorizerLambdaContext fromEvent(Map<String, Object> event) {
             Object requestContext = event.get("requestContext");
             if (!(requestContext instanceof Map<?, ?> rc)) {
@@ -180,6 +194,7 @@ public class PaymentInitiationHandler implements RequestHandler<Map<String, Obje
             return partnerDisplayName;
         }
 
+        // Used to check if the authorized context comes through with true value
         boolean isEffectivelyAuthorized() {
             if (authorizedRaw instanceof Boolean b) {
                 return b;
