@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.ryanwoolf.authorizer.TestLambdaContext;
 import org.junit.jupiter.api.Test;
 
+import java.math.BigDecimal;
 import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.List;
@@ -21,11 +22,13 @@ class PaymentInitiationHandlerTest {
         final List<String> ids = new ArrayList<>();
 
         @Override
-        public void createIfAbsent(String compositeIdempotencyKey, String partnerId) throws DuplicateTransactionException {
-            if (ids.contains(compositeIdempotencyKey)) {
+        public void createIfAbsent(String partnerId, String clientIdempotencyKey, BigDecimal amount, String currency)
+                throws DuplicateTransactionException {
+            String composite = TransactionIdempotencyKeys.composite(partnerId, clientIdempotencyKey);
+            if (ids.contains(composite)) {
                 throw new DuplicateTransactionException();
             }
-            ids.add(compositeIdempotencyKey);
+            ids.add(composite);
         }
     }
 
@@ -43,6 +46,8 @@ class PaymentInitiationHandlerTest {
         assertEquals("super-user", body.get("partnerId").asText());
         assertEquals("Super User", body.get("partner").asText());
         assertEquals("PENDING", body.get("status").asText());
+        assertEquals(0, new BigDecimal("100").compareTo(new BigDecimal(body.get("amount").asText())));
+        assertEquals("EUR", body.get("currency").asText());
         assertFalse(body.get("repeat").asBoolean());
         assertEquals(1, repo.ids.size());
         assertEquals("super-user#test-payment-001", repo.ids.getFirst());
@@ -61,6 +66,8 @@ class PaymentInitiationHandlerTest {
         assertEquals("super-user", body.get("partnerId").asText());
         assertEquals("PENDING", body.get("status").asText());
         assertEquals("super-user#test-payment-001", body.get("transactionId").asText());
+        assertEquals(0, new BigDecimal("100").compareTo(new BigDecimal(body.get("amount").asText())));
+        assertEquals("EUR", body.get("currency").asText());
     }
 
     @Test

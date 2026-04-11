@@ -2,96 +2,123 @@ package com.ryanwoolf.authorizer.service;
 
 import com.ryanwoolf.authorizer.model.PartnerRecord;
 import com.ryanwoolf.authorizer.util.Env;
-import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
-import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
-import software.amazon.awssdk.services.dynamodb.model.GetItemRequest;
-import software.amazon.awssdk.services.dynamodb.model.GetItemResponse;
 
-import java.util.Map;
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.util.Locale;
 import java.util.logging.Logger;
 
 public class PartnerLookupService implements PartnerLookup {
     private static final Logger LOGGER = Logger.getLogger(PartnerLookupService.class.getName());
 
-    static final String ATTR_API_KEY_HASH = "apiKeyHash";
-    static final String ATTR_PARTNER = "partner";
-    static final String ATTR_ENABLED = "enabled";
+    private static final String DEFAULT_ALLOWED_ROLES = "SUPER,PAYMENT";
+    private static final String FIND_PARTNER_SQL = """
+            SELECT p.display_name, p.enabled, ps.partner_secret_hash
+            FROM auth.partner p
+            JOIN auth.partner_secret ps ON ps.partner_fk = p.id
+            WHERE p.partner_id = ?
+              AND ps.active = TRUE
+              AND (ps.expires_at IS NULL OR ps.expires_at > CURRENT_TIMESTAMP)
+              AND EXISTS (
+                  SELECT 1
+                  FROM auth.partner_role pr
+                  JOIN auth.role r ON r.id = pr.role_fk
+                  WHERE pr.partner_fk = p.id
+                    AND r.role_code = ANY (?)
+              )
+            ORDER BY ps.created_at DESC
+            LIMIT 1
+            """;
 
-    private final DynamoDbClient dynamoDbClient;
     private final Argon2ApiKeyHashService argon2ApiKeyHashService;
-    private final String tableName;
-    private final String partitionKeyAttributeName;
+    private final String jdbcUrl;
+    private final String dbUsername;
+    private final String dbPassword;
+    private final String[] allowedRoleCodes;
 
     public PartnerLookupService() {
         this(
-                DynamoDbClient.create(),
                 new Argon2ApiKeyHashService(),
-                Env.required("PARTNER_TABLE_NAME"),
-                Env.optional("PARTNER_TABLE_PK_ATTRIBUTE", "partnerId"));
+                requiredPostgresJdbcUrl(),
+                Env.required("AUTH_DB_USERNAME"),
+                Env.required("AUTH_DB_PASSWORD"),
+                parseAllowedRoles(Env.optional("AUTH_ALLOWED_ROLE_CODES", DEFAULT_ALLOWED_ROLES)));
     }
 
     PartnerLookupService(
-            DynamoDbClient dynamoDbClient,
             Argon2ApiKeyHashService argon2ApiKeyHashService,
-            String tableName,
-            String partitionKeyAttributeName) {
-        this.dynamoDbClient = dynamoDbClient;
+            String jdbcUrl,
+            String dbUsername,
+            String dbPassword,
+            String[] allowedRoleCodes) {
         this.argon2ApiKeyHashService = argon2ApiKeyHashService;
-        this.tableName = tableName;
-        this.partitionKeyAttributeName = partitionKeyAttributeName;
+        this.jdbcUrl = jdbcUrl;
+        this.dbUsername = dbUsername;
+        this.dbPassword = dbPassword;
+        this.allowedRoleCodes = allowedRoleCodes;
     }
 
-    // Used by the partner token issuer to validate the x-api-key for a given
-    // x-partner-id and check enabled status
     @Override
     public PartnerRecord findByPartnerIdAndApiKey(String partnerId, String apiKey) {
-        LOGGER.info(() -> "Partner lookup started: partnerId=" + partnerId + ", tableName=" + tableName);
-        GetItemRequest request = GetItemRequest.builder()
-                .tableName(tableName)
-                .key(Map.of(
-                        partitionKeyAttributeName, AttributeValue.builder().s(partnerId).build()))
-                .build();
+        LOGGER.info(() -> "Partner lookup started: partnerId=" + partnerId + ", database=postgres");
+        try (Connection connection = DriverManager.getConnection(jdbcUrl, dbUsername, dbPassword);
+                PreparedStatement statement = connection.prepareStatement(FIND_PARTNER_SQL)) {
+            statement.setString(1, partnerId);
+            statement.setArray(2, connection.createArrayOf("text", allowedRoleCodes));
 
-        GetItemResponse response = dynamoDbClient.getItem(request);
-        Map<String, AttributeValue> item = response.item();
-        LOGGER.info(() -> "Partner lookup result: row found for partnerId=" + partnerId);
+            try (ResultSet rs = statement.executeQuery()) {
+                if (!rs.next()) {
+                    LOGGER.info(() -> "Partner lookup result: no eligible row found for partnerId=" + partnerId);
+                    return null;
+                }
 
-        if (validateResponseAndAPIKeyPresent(partnerId, response, item))
-            return null;
+                String partnerSecretHash = rs.getString("partner_secret_hash");
+                if (partnerSecretHash == null || partnerSecretHash.isBlank()) {
+                    LOGGER.warning(() -> "Partner row missing partner_secret_hash for partnerId=" + partnerId);
+                    return null;
+                }
 
-        if (validateAPIKeyMatches(partnerId, apiKey, item))
-            return null;
+                if (!argon2ApiKeyHashService.matches(apiKey, partnerSecretHash)) {
+                    LOGGER.info(() -> "API key hash verification failed for partnerId=" + partnerId);
+                    return null;
+                }
 
-        String partner = item.containsKey(ATTR_PARTNER) ? item.get(ATTR_PARTNER).s() : null;
-        boolean enabled = item.containsKey(ATTR_ENABLED) && Boolean.TRUE.equals(item.get(ATTR_ENABLED).bool());
-        LOGGER.info(() -> "Partner enabled flag for partnerId=" + partnerId + ": " + enabled);
-
-        return new PartnerRecord(partner, enabled);
+                String partner = rs.getString("display_name");
+                boolean enabled = rs.getBoolean("enabled");
+                LOGGER.info(() -> "Partner lookup result: partnerId=" + partnerId + ", enabled=" + enabled);
+                return new PartnerRecord(partner, enabled);
+            }
+        } catch (SQLException e) {
+            String details = "Postgres partner lookup failed: sqlState=" + e.getSQLState()
+                    + ", errorCode=" + e.getErrorCode()
+                    + ", message=" + e.getMessage();
+            LOGGER.severe(details);
+            throw new IllegalStateException(details, e);
+        } catch (Exception e) {
+            String details = "Postgres partner lookup failed: " + e.getMessage();
+            LOGGER.severe(details);
+            throw new IllegalStateException(details, e);
+        }
     }
 
-    // Used to validate that the API key matches the encoded hash
-    private boolean validateAPIKeyMatches(String partnerId, String apiKey, Map<String, AttributeValue> item) {
-        String storedHash = item.get(ATTR_API_KEY_HASH).s();
-        boolean hashMatches = argon2ApiKeyHashService.matches(apiKey, storedHash);
-        LOGGER.info(() -> "API key hash verification result for partnerId=" + partnerId + ": " + hashMatches);
-        if (!hashMatches) {
-            return true;
-        }
-        return false;
+    private static String[] parseAllowedRoles(String csvRoleCodes) {
+        return csvRoleCodes
+                .trim()
+                .toUpperCase(Locale.ROOT)
+                .replace(" ", "")
+                .split(",");
     }
 
-    // Used to validate that the response and API key are present
-    private static boolean validateResponseAndAPIKeyPresent(String partnerId, GetItemResponse response,
-            Map<String, AttributeValue> item) {
-        if (response.item() == null || response.item().isEmpty()) {
-            LOGGER.info(() -> "Partner lookup result: no row found for partnerId=" + partnerId);
-            return true;
+    private static String requiredPostgresJdbcUrl() {
+        String raw = Env.required("AUTH_DB_JDBC_URL").trim();
+        if (raw.regionMatches(true, 0, "jdbc:postgresql://", 0, "jdbc:postgresql://".length())) {
+            return raw;
         }
-
-        if (!item.containsKey(ATTR_API_KEY_HASH) || item.get(ATTR_API_KEY_HASH).s() == null) {
-            LOGGER.warning(() -> "Partner row missing apiKeyHash for partnerId=" + partnerId);
-            return true;
-        }
-        return false;
+        throw new IllegalStateException(
+                "AUTH_DB_JDBC_URL must be a full PostgreSQL JDBC URL, for example: "
+                        + "jdbc:postgresql://payments-postgres.cpmgyowgui8a.eu-west-1.rds.amazonaws.com:5432/payments_db");
     }
 }
