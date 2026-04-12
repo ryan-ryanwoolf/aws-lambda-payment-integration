@@ -2,9 +2,10 @@ package com.ryanwoolf.authorizer.service;
 
 import com.ryanwoolf.authorizer.model.PartnerRecord;
 import com.ryanwoolf.authorizer.util.Env;
+import com.ryanwoolf.db.LambdaJdbcPools;
 
+import javax.sql.DataSource;
 import java.sql.Connection;
-import java.sql.DriverManager;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -34,37 +35,29 @@ public class PartnerLookupService implements PartnerLookup {
             """;
 
     private final Argon2ApiKeyHashService argon2ApiKeyHashService;
-    private final String jdbcUrl;
-    private final String dbUsername;
-    private final String dbPassword;
+    private final DataSource dataSource;
     private final String[] allowedRoleCodes;
 
     public PartnerLookupService() {
         this(
                 new Argon2ApiKeyHashService(),
-                requiredPostgresJdbcUrl(),
-                Env.required("AUTH_DB_USERNAME"),
-                Env.required("AUTH_DB_PASSWORD"),
+                LambdaJdbcPools.auth(),
                 parseAllowedRoles(Env.optional("AUTH_ALLOWED_ROLE_CODES", DEFAULT_ALLOWED_ROLES)));
     }
 
     PartnerLookupService(
             Argon2ApiKeyHashService argon2ApiKeyHashService,
-            String jdbcUrl,
-            String dbUsername,
-            String dbPassword,
+            DataSource dataSource,
             String[] allowedRoleCodes) {
         this.argon2ApiKeyHashService = argon2ApiKeyHashService;
-        this.jdbcUrl = jdbcUrl;
-        this.dbUsername = dbUsername;
-        this.dbPassword = dbPassword;
+        this.dataSource = dataSource;
         this.allowedRoleCodes = allowedRoleCodes;
     }
 
     @Override
     public PartnerRecord findByPartnerIdAndApiKey(String partnerId, String apiKey) {
         LOGGER.info(() -> "Partner lookup started: partnerId=" + partnerId + ", database=postgres");
-        try (Connection connection = DriverManager.getConnection(jdbcUrl, dbUsername, dbPassword);
+        try (Connection connection = dataSource.getConnection();
                 PreparedStatement statement = connection.prepareStatement(FIND_PARTNER_SQL)) {
             statement.setString(1, partnerId);
             statement.setArray(2, connection.createArrayOf("text", allowedRoleCodes));
@@ -112,13 +105,4 @@ public class PartnerLookupService implements PartnerLookup {
                 .split(",");
     }
 
-    private static String requiredPostgresJdbcUrl() {
-        String raw = Env.required("AUTH_DB_JDBC_URL").trim();
-        if (raw.regionMatches(true, 0, "jdbc:postgresql://", 0, "jdbc:postgresql://".length())) {
-            return raw;
-        }
-        throw new IllegalStateException(
-                "AUTH_DB_JDBC_URL must be a full PostgreSQL JDBC URL, for example: "
-                        + "jdbc:postgresql://payments-postgres.cpmgyowgui8a.eu-west-1.rds.amazonaws.com:5432/payments_db");
-    }
 }

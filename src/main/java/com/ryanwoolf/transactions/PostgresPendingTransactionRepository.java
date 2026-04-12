@@ -1,10 +1,10 @@
 package com.ryanwoolf.transactions;
 
-import com.ryanwoolf.authorizer.util.Env;
+import com.ryanwoolf.db.LambdaJdbcPools;
 
+import javax.sql.DataSource;
 import java.math.BigDecimal;
 import java.sql.Connection;
-import java.sql.DriverManager;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.util.UUID;
@@ -24,27 +24,20 @@ public final class PostgresPendingTransactionRepository implements PendingTransa
             ON CONFLICT (partner_id, idempotency_key) DO NOTHING
             """;
 
-    private final String jdbcUrl;
-    private final String dbUsername;
-    private final String dbPassword;
+    private final DataSource dataSource;
 
     public PostgresPendingTransactionRepository() {
-        this(
-                requiredPostgresJdbcUrl(Env.required("PAYMENTS_DB_JDBC_URL")),
-                Env.required("PAYMENTS_DB_USERNAME"),
-                Env.required("PAYMENTS_DB_PASSWORD"));
+        this(LambdaJdbcPools.payments());
     }
 
-    PostgresPendingTransactionRepository(String jdbcUrl, String dbUsername, String dbPassword) {
-        this.jdbcUrl = jdbcUrl;
-        this.dbUsername = dbUsername;
-        this.dbPassword = dbPassword;
+    PostgresPendingTransactionRepository(DataSource dataSource) {
+        this.dataSource = dataSource;
     }
 
     @Override
     public void createIfAbsent(String partnerId, String clientIdempotencyKey, BigDecimal amount, String currency)
             throws DuplicateTransactionException {
-        try (Connection connection = DriverManager.getConnection(jdbcUrl, dbUsername, dbPassword);
+        try (Connection connection = dataSource.getConnection();
                 PreparedStatement statement = connection.prepareStatement(INSERT_PENDING)) {
             statement.setObject(1, UUID.randomUUID());
             statement.setString(2, partnerId);
@@ -60,15 +53,5 @@ public final class PostgresPendingTransactionRepository implements PendingTransa
         } catch (SQLException e) {
             throw new IllegalStateException("Postgres pending transaction insert failed: " + e.getMessage(), e);
         }
-    }
-
-    private static String requiredPostgresJdbcUrl(String raw) {
-        String trimmed = raw.trim();
-        if (trimmed.regionMatches(true, 0, "jdbc:postgresql://", 0, "jdbc:postgresql://".length())) {
-            return trimmed;
-        }
-        throw new IllegalStateException(
-                "PAYMENTS_DB_JDBC_URL must be a full PostgreSQL JDBC URL, for example: "
-                        + "jdbc:postgresql://host:5432/payments_db");
     }
 }
