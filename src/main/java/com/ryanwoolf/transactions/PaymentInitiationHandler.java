@@ -2,22 +2,29 @@ package com.ryanwoolf.transactions;
 
 import com.amazonaws.services.lambda.runtime.Context;
 import com.amazonaws.services.lambda.runtime.RequestHandler;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.DecimalNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.ryanwoolf.api.ApiGatewayResponses;
 import com.ryanwoolf.api.ApiGatewayHeaderExtractor;
 import com.ryanwoolf.api.LambdaExceptionMapper;
 
+import java.math.BigDecimal;
+import java.nio.charset.StandardCharsets;
+import java.util.Base64;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 /**
  * Payment initiation Lambda (REST API proxy or HTTP API v2 proxy).
  * Partner identity comes only from the API Gateway authorizer context (never
  * from the body).
- * Requires header {@code Idempotency-Key}; the composite {@code partnerId#key}
- * is stored in DynamoDB
- * and returned as {@code transactionId}.
+ * Requires header {@code Idempotency-Key} and JSON body with {@code amount} and
+ * {@code currency}. The composite {@code partnerId#key} is returned as
+ * {@code transactionId}; partner, idempotency key, amount, and currency are stored
+ * in Postgres ({@code payments.payment_transaction}).
  * <p>
  * Handler: {@code com.ryanwoolf.transactions.PaymentInitiationHandler}
  */
@@ -42,7 +49,7 @@ public class PaymentInitiationHandler implements RequestHandler<Map<String, Obje
     private final PendingTransactionRepository pendingTransactions;
 
     public PaymentInitiationHandler() {
-        this(new DynamoDbPendingTransactionRepository());
+        this(new PostgresPendingTransactionRepository());
     }
 
     PaymentInitiationHandler(PendingTransactionRepository pendingTransactions) {
@@ -64,11 +71,13 @@ public class PaymentInitiationHandler implements RequestHandler<Map<String, Obje
             String clientIdempotencyKey = ApiGatewayHeaderExtractor.getHeader(event, "Idempotency-Key");
             validateIdempotencyKeyPresent(clientIdempotencyKey);
 
-            final String compositeKey;
+            String trimmedIdempotencyKey = clientIdempotencyKey.trim();
+            final String compositeKey = TransactionIdempotencyKeys.composite(partnerId, trimmedIdempotencyKey);
 
-            // Used to create the composite key for the idempotency key
-            compositeKey = TransactionIdempotencyKeys.composite(partnerId, clientIdempotencyKey);
-            pendingTransactions.createIfAbsent(compositeKey, partnerId);
+            String rawBody = extractRawBody(event);
+            AmountCurrency amountCurrency = parseAmountCurrency(rawBody);
+            pendingTransactions.createIfAbsent(
+                    partnerId, trimmedIdempotencyKey, amountCurrency.amount(), amountCurrency.currency());
 
             ObjectNode body = MAPPER.createObjectNode();
             body.put("transactionId", compositeKey);
@@ -76,7 +85,9 @@ public class PaymentInitiationHandler implements RequestHandler<Map<String, Obje
             if (auth.partnerDisplayName() != null && !auth.partnerDisplayName().isBlank()) {
                 body.put("partner", auth.partnerDisplayName());
             }
-            body.put("status", DynamoDbPendingTransactionRepository.STATUS_PENDING);
+            body.set("amount", DecimalNode.valueOf(amountCurrency.amount()));
+            body.put("currency", amountCurrency.currency());
+            body.put("status", PostgresPendingTransactionRepository.STATUS_PENDING);
             body.put("repeat", false);
 
             context.getLogger().log(
@@ -126,6 +137,65 @@ public class PaymentInitiationHandler implements RequestHandler<Map<String, Obje
      * {@code requestContext.http.method}.
      */
     // Used to extract the HTTP method from the event
+    private record AmountCurrency(BigDecimal amount, String currency) {
+    }
+
+    private static String extractRawBody(Map<String, Object> event) {
+        Object body = event.get("body");
+        if (body == null) {
+            return null;
+        }
+        String s = String.valueOf(body);
+        Object b64 = event.get("isBase64Encoded");
+        if (Boolean.TRUE.equals(b64) || "true".equalsIgnoreCase(String.valueOf(b64))) {
+            return new String(Base64.getDecoder().decode(s), StandardCharsets.UTF_8);
+        }
+        return s;
+    }
+
+    private static AmountCurrency parseAmountCurrency(String rawBody) {
+        if (rawBody == null || rawBody.isBlank()) {
+            throw new IllegalArgumentException("Request body is required with JSON amount and currency");
+        }
+        JsonNode root;
+        try {
+            root = MAPPER.readTree(rawBody);
+        } catch (Exception e) {
+            throw new IllegalArgumentException("Request body must be valid JSON");
+        }
+        if (root == null || !root.isObject()) {
+            throw new IllegalArgumentException("Request body must be a JSON object");
+        }
+        JsonNode amountNode = root.get("amount");
+        JsonNode currencyNode = root.get("currency");
+        if (amountNode == null || amountNode.isNull()) {
+            throw new IllegalArgumentException("amount is required in JSON body");
+        }
+        if (currencyNode == null || currencyNode.isNull()) {
+            throw new IllegalArgumentException("currency is required in JSON body");
+        }
+        if (!amountNode.isNumber()) {
+            throw new IllegalArgumentException("amount must be a number");
+        }
+        BigDecimal amount;
+        try {
+            amount = new BigDecimal(amountNode.asText().trim());
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException("amount must be a number");
+        }
+        if (amount.compareTo(BigDecimal.ZERO) <= 0) {
+            throw new IllegalArgumentException("amount must be greater than zero");
+        }
+        String currency = currencyNode.asText().trim().toUpperCase(Locale.ROOT);
+        if (currency.isEmpty()) {
+            throw new IllegalArgumentException("currency must not be blank");
+        }
+        if (currency.length() > 10) {
+            throw new IllegalArgumentException("currency must be at most 10 characters");
+        }
+        return new AmountCurrency(amount, currency);
+    }
+
     private static String extractHttpMethod(Map<String, Object> event) {
         Object top = event.get("httpMethod");
         if (top != null) {

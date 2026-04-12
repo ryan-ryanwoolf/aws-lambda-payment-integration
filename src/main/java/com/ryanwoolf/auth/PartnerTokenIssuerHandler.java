@@ -15,7 +15,7 @@ import java.util.Map;
 
 /**
  * Public REST API endpoint: validates {@code x-api-key} + {@code x-partner-id}
- * (Argon2 in DynamoDB)
+ * (Argon2 hash stored in Postgres)
  * and returns a short-lived JWT for {@link JwtPolicyAuthorizerHandler}.
  * <p>
  * Handler: {@code com.ryanwoolf.auth.PartnerTokenIssuerHandler}
@@ -71,27 +71,49 @@ public class PartnerTokenIssuerHandler implements RequestHandler<Map<String, Obj
         return j;
     }
 
-    // This is used to handle the request for a new JWT for a partner. It validates the incoming x-api-key and x-partner-id, looks up the partner record in DynamoDB, and if valid, issues a JWT with the partnerId and partner name as claims.
+    // This handles issuing a JWT for a partner after validating x-api-key and
+    // x-partner-id against Postgres-backed partner credentials.
     @Override
     public Map<String, Object> handleRequest(Map<String, Object> event, Context context) {
+        long requestStartNanos = System.nanoTime();
         try {
+            long validationStartNanos = System.nanoTime();
+            logStart(context, "request_validation");
             String method = stringVal(event.get("httpMethod"));
             validatePostRequest(method);
             String apiKey = ApiGatewayHeaderExtractor.getHeader(event, "x-api-key");
             String partnerId = ApiGatewayHeaderExtractor.getHeader(event, "x-partner-id");
             validateApiKeyAndPartnerIdPresent(apiKey, partnerId);
+            logEnd(context, "request_validation", validationStartNanos);
+
+            long lookupStartNanos = System.nanoTime();
+            logStart(context, "partner_lookup");
             PartnerRecord partner = partnerLookup.findByPartnerIdAndApiKey(partnerId, apiKey);
             validatePartnerExists(partner);
-            String token = jwt().createAccessToken(partnerId, partner.partner());
+            logEnd(context, "partner_lookup", lookupStartNanos);
+
+            long jwtInitStartNanos = System.nanoTime();
+            logStart(context, "jwt_service_init");
+            JwtTokenService jwtService = jwt();
+            logEnd(context, "jwt_service_init", jwtInitStartNanos);
+
+            long tokenSignStartNanos = System.nanoTime();
+            logStart(context, "token_signing");
+            String token = jwtService.createAccessToken(partnerId, partner.partner());
+            logEnd(context, "token_signing", tokenSignStartNanos);
 
             Map<String, Object> body = new HashMap<>();
             body.put("access_token", token);
             body.put("token_type", "Bearer");
-            body.put("expires_in", jwt().ttlSeconds());
+            body.put("expires_in", jwtService.ttlSeconds());
 
             context.getLogger().log("Issued JWT for partnerId=" + partnerId);
+            context.getLogger().log("Timing: operation=token_issue_total status=end elapsedMs="
+                    + elapsedMillis(requestStartNanos));
             return ApiGatewayResponses.jsonResponse(200, body);
         } catch (Exception e) {
+            context.getLogger().log("Timing: operation=token_issue_total status=end elapsedMs="
+                    + elapsedMillis(requestStartNanos));
             return LambdaExceptionMapper.map(
                     e,
                     context,
@@ -124,6 +146,19 @@ public class PartnerTokenIssuerHandler implements RequestHandler<Map<String, Obj
 
     private static String stringVal(Object o) {
         return o == null ? null : String.valueOf(o);
+    }
+
+    private static void logStart(Context context, String operation) {
+        context.getLogger().log("Timing: operation=" + operation + " status=start");
+    }
+
+    private static void logEnd(Context context, String operation, long startedAtNanos) {
+        context.getLogger().log("Timing: operation=" + operation + " status=end elapsedMs="
+                + elapsedMillis(startedAtNanos));
+    }
+
+    private static long elapsedMillis(long startedAtNanos) {
+        return (System.nanoTime() - startedAtNanos) / 1_000_000L;
     }
 
 }

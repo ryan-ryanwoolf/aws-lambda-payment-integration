@@ -3,11 +3,13 @@ package com.ryanwoolf.auth;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.ryanwoolf.authorizer.util.Env;
+import software.amazon.awssdk.core.client.config.ClientOverrideConfiguration;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.secretsmanager.SecretsManagerClient;
 import software.amazon.awssdk.services.secretsmanager.model.GetSecretValueRequest;
 
 import java.io.IOException;
+import java.time.Duration;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -92,7 +94,18 @@ public final class JwtSecretPemLoader {
                 if (secretsClient == null) {
                     String region = firstNonBlank(System.getenv("AWS_REGION"), System.getenv("AWS_DEFAULT_REGION"),
                             "eu-west-1");
-                    secretsClient = SecretsManagerClient.builder().region(Region.of(region)).build();
+                    Duration attemptTimeout = Duration.ofSeconds(Long.parseLong(
+                            Env.optional("JWT_SECRETS_API_CALL_ATTEMPT_TIMEOUT_SECONDS", "3")));
+                    Duration callTimeout = Duration.ofSeconds(Long.parseLong(
+                            Env.optional("JWT_SECRETS_API_CALL_TIMEOUT_SECONDS", "6")));
+                    ClientOverrideConfiguration overrideConfiguration = ClientOverrideConfiguration.builder()
+                            .apiCallAttemptTimeout(attemptTimeout)
+                            .apiCallTimeout(callTimeout)
+                            .build();
+                    secretsClient = SecretsManagerClient.builder()
+                            .region(Region.of(region))
+                            .overrideConfiguration(overrideConfiguration)
+                            .build();
                 }
             }
         }
